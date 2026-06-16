@@ -1,0 +1,180 @@
+name: ESP32-S3-EYE CI/CD Pipeline
+
+on:
+  push:
+    branches: [ master, main ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+  pull_request:
+    branches: [ master, main ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+  workflow_dispatch:
+    inputs:
+      idf_version:
+        description: 'ESP-IDF Version'
+        required: false
+        default: 'v5.5.4'
+        type: string
+      verbose:
+        description: 'Verbose Build Output'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  DEFAULT_TARGET: esp32s3
+  DEFAULT_IDF_VERSION: v5.5.4
+  BUILD_DIR: build
+  ARTIFACTS_DIR: artifacts
+
+jobs:
+  discover-examples:
+    name: Discover Examples
+    runs-on: ubuntu-latest
+    outputs:
+      examples: ${{ steps.set-examples.outputs.examples }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Find examples
+        id: set-examples
+        run: |
+          EXAMPLES=$(find examples -name "CMakeLists.txt" -mindepth 2 -maxdepth 2 -exec dirname {} \; | sort | jq -R -s -c 'split("\n")[:-1]')
+          echo "examples=$EXAMPLES" >> $GITHUB_OUTPUT
+          echo "Discovered examples: $EXAMPLES"
+
+  build:
+    name: Build ${{ matrix.example }} (${{ matrix.target }}, IDF ${{ matrix.idf-version }})
+    needs: discover-examples
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        example: ${{ fromJSON(needs.discover-examples.outputs.examples) }}
+        idf-version:
+          - "v5.5.4"
+          - "v5.4.2"
+          - "v5.3.3"
+        target:
+          - "esp32s3"
+        exclude:
+          - idf-version: "v5.3.3"
+            example: "examples/lcd_display"
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Cache ESP-IDF tools
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.espressif
+          **/managed_components
+        key: ${{ runner.os }}-idf-${{ matrix.idf-version }}-${{ hashFiles('**/idf_component.yml') }}
+        restore-keys: |
+          ${{ runner.os }}-idf-${{ matrix.idf-version }}-
+
+    - name: Setup ESP-IDF ${{ matrix.idf-version }}
+      uses: espressif/esp-idf-ci-action@v1
+      with:
+        esp_idf_version: ${{ matrix.idf-version }}
+        target: ${{ matrix.target }}
+
+    - name: Configure build
+      shell: bash
+      run: |
+        EXAMPLE_PATH="${{ matrix.example }}"
+        EXAMPLE_NAME=$(basename "$EXAMPLE_PATH")
+        idf.py -C "$EXAMPLE_PATH" set-target ${{ matrix.target }}
+        if [ "${{ inputs.verbose }}" = "true" ]; then
+          idf.py -C "$EXAMPLE_PATH" menuconfig --help
+        fi
+
+    - name: Build firmware
+      shell: bash
+      run: |
+        EXAMPLE_PATH="${{ matrix.example }}"
+        if [ "${{ inputs.verbose }}" = "true" ]; then
+          idf.py -C "$EXAMPLE_PATH" build -v
+        else
+          idf.py -C "$EXAMPLE_PATH" build
+        fi
+
+    - name: Get firmware size info
+      shell: bash
+      run: |
+        EXAMPLE_PATH="${{ matrix.example }}"
+        idf.py -C "$EXAMPLE_PATH" size
+        idf.py -C "$EXAMPLE_PATH" size-components
+        idf.py -C "$EXAMPLE_PATH" size-files
+
+    - name: Generate build manifest
+      shell: bash
+      run: |
+        EXAMPLE_PATH="${{ matrix.example }}"
+        EXAMPLE_NAME=$(basename "$EXAMPLE_PATH")
+        OUT_DIR="$ARTIFACTS_DIR/$EXAMPLE_NAME"
+        mkdir -p "$OUT_DIR"
+
+        cat > "$OUT_DIR/build_info.json" << EOF
+        {
+          "example": "$EXAMPLE_NAME",
+          "example_path": "$EXAMPLE_PATH",
+          "target": "${{ matrix.target }}",
+          "idf_version": "${{ matrix.idf-version }}",
+          "build_date": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+          "git_sha": "$GITHUB_SHA",
+          "git_ref": "$GITHUB_REF"
+        }
+        EOF
+
+    - name: Collect firmware artifacts
+      if: success()
+      shell: bash
+      run: |
+        EXAMPLE_PATH="${{ matrix.example }}"
+        EXAMPLE_NAME=$(basename "$EXAMPLE_PATH")
+        OUT_DIR="$ARTIFACTS_DIR/$EXAMPLE_NAME"
+        mkdir -p "$OUT_DIR"
+
+        cp "$EXAMPLE_PATH/build/bootloader/bootloader.bin" "$OUT_DIR/"
+        cp "$EXAMPLE_PATH/build/partition_table/partition-table.bin" "$OUT_DIR/"
+        cp "$EXAMPLE_PATH/build/"*.bin "$OUT_DIR/" 2>/dev/null || true
+        cp "$EXAMPLE_PATH/build/"*.elf "$OUT_DIR/" 2>/dev/null || true
+        cp "$EXAMPLE_PATH/build/"*.map "$OUT_DIR/" 2>/dev/null || true
+        cp "$EXAMPLE_PATH/build/flasher_args.json" "$OUT_DIR/" 2>/dev/null || true
+
+        ls -lh "$OUT_DIR"
+
+    - name: Generate combined firmware image
+      if: success()
+      shell: bash
+      run: |
+        EXAMPLE_PATH="${{ matrix.example }}"
+        EXAMPLE_NAME=$(basename "$EXAMPLE_PATH")
+        OUT_DIR="$ARTIFACTS_DIR/$EXAMPLE_NAME"
+
+        python $IDF_PATH/components/esptool_py/esptool/esptool.py \
+          --chip ${{ matrix.target }} \
+          merge_bin \
+          -o "$OUT_DIR/${EXAMPLE_NAME}_combined.bin" \
+          @$EXAMPLE_PATH/build/flasher_args.json
+
+        ls -lh "$OUT_DIR/${EXAMPLE_NAME}_combined.bin"
+
+    - name: Upload build artifacts
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.target }}-${{ matrix.idf-version }}-${{ matrix.example }}
+        path: ${{ env.ARTIFACTS_DIR }}/
+        retention-days: 30

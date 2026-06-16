@@ -1,0 +1,24 @@
+---
+default: true
+
+# Allow longer lines in code blocks
+line_length:
+  code_blocks: false
+  tables: false
+
+# Allow multiple headers with the same content
+no-duplicate-header:
+  siblings_only: true
+
+# Allow non-lowercase HTML elements
+no-alt-text: false
+html:
+  allowed_elements:
+    - details
+    - summary
+
+# Disable some rules for flexibility
+MD013: false
+MD033: false
+MD041: false
+---

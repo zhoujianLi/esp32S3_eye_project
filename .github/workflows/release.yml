@@ -1,0 +1,231 @@
+name: Release & OTA Firmware Generation
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release Version (e.g., v1.0.0)'
+        required: true
+        type: string
+      draft:
+        description: 'Create as Draft Release'
+        required: false
+        default: true
+        type: boolean
+      prerelease:
+        description: 'Mark as Pre-release'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  DEFAULT_TARGET: esp32s3
+  DEFAULT_IDF_VERSION: v5.5.4
+
+jobs:
+  build-release:
+    name: Build Release Firmware
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        example:
+          - "examples/lcd_display"
+        idf-version:
+          - "v5.5.4"
+        target:
+          - "esp32s3"
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        fetch-depth: 0
+
+    - name: Get version tag
+      id: get-version
+      run: |
+        if [ "${{ github.event_name }}" = "push" ]; then
+          VERSION=${GITHUB_REF#refs/tags/}
+        else
+          VERSION="${{ inputs.version }}"
+        fi
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Building release version: $VERSION"
+
+    - name: Cache ESP-IDF tools
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.espressif
+          **/managed_components
+        key: ${{ runner.os }}-idf-release-${{ matrix.idf-version }}-${{ hashFiles('**/idf_component.yml') }}
+        restore-keys: |
+          ${{ runner.os }}-idf-release-${{ matrix.idf-version }}-
+
+    - name: Setup ESP-IDF ${{ matrix.idf-version }}
+      uses: espressif/esp-idf-ci-action@v1
+      with:
+        esp_idf_version: ${{ matrix.idf-version }}
+        target: ${{ matrix.target }}
+
+    - name: Inject version into firmware
+      run: |
+        EXAMPLE_PATH="${{ matrix.example }}"
+        VERSION="${{ steps.get-version.outputs.version }}"
+
+        if [ -f "$EXAMPLE_PATH/main/CMakeLists.txt" ]; then
+          sed -i "1i add_compile_definitions(FIRMWARE_VERSION=\"$VERSION\")" "$EXAMPLE_PATH/main/CMakeLists.txt"
+          echo "Injected version $VERSION into build"
+        fi
+
+    - name: Build release firmware
+      run: |
+        EXAMPLE_PATH="${{ matrix.example }}"
+        idf.py -C "$EXAMPLE_PATH" set-target ${{ matrix.target }}
+        idf.py -C "$EXAMPLE_PATH" build
+
+    - name: Generate OTA firmware image
+      run: |
+        EXAMPLE_PATH="${{ matrix.example }}"
+        EXAMPLE_NAME=$(basename "$EXAMPLE_PATH")
+        VERSION="${{ steps.get-version.outputs.version }}"
+        OUT_DIR="release_artifacts"
+        mkdir -p "$OUT_DIR"
+
+        python $IDF_PATH/components/app_update/gen_ota_partition.py \
+          --app "$EXAMPLE_PATH/build/${EXAMPLE_NAME}.bin" \
+          --output "$OUT_DIR/${EXAMPLE_NAME}_${VERSION}_ota.bin"
+
+        ls -lh "$OUT_DIR/"
+
+    - name: Create flash package
+      run: |
+        EXAMPLE_PATH="${{ matrix.example }}"
+        EXAMPLE_NAME=$(basename "$EXAMPLE_PATH")
+        VERSION="${{ steps.get-version.outputs.version }}"
+        OUT_DIR="release_artifacts"
+
+        python $IDF_PATH/components/esptool_py/esptool/esptool.py \
+          --chip ${{ matrix.target }} \
+          merge_bin \
+          -o "$OUT_DIR/${EXAMPLE_NAME}_${VERSION}_full.bin" \
+          @$EXAMPLE_PATH/build/flasher_args.json
+
+        cp "$EXAMPLE_PATH/build/bootloader/bootloader.bin" "$OUT_DIR/"
+        cp "$EXAMPLE_PATH/build/partition_table/partition-table.bin" "$OUT_DIR/"
+        cp "$EXAMPLE_PATH/build/${EXAMPLE_NAME}.bin" "$OUT_DIR/"
+
+    - name: Generate release notes
+      run: |
+        OUT_DIR="release_artifacts"
+        VERSION="${{ steps.get-version.outputs.version }}"
+
+        cat > "$OUT_DIR/RELEASE_NOTES.md" << EOF
+        # ESP32-S3-EYE Firmware $VERSION
+
+        ## Release Information
+        - **Version**: $VERSION
+        - **Build Date**: $(date -u +"%Y-%m-%d")
+        - **Target Chip**: ESP32-S3
+        - **ESP-IDF Version**: ${{ matrix.idf-version }}
+
+        ## Included Firmware
+        - \`lcd_display_full.bin\` - Full flash image (for factory flashing)
+        - \`lcd_display_ota.bin\` - OTA update image (for device-side updates)
+        - Individual binaries for manual flashing
+
+        ## Flashing Instructions
+
+        ### Full Flash (Factory)
+        \`\`\`bash
+        esptool.py --chip esp32s3 write_flash 0x0 lcd_display_${VERSION}_full.bin
+        \`\`\`
+
+        ### Individual Binaries
+        \`\`\`bash
+        esptool.py --chip esp32s3 write_flash \
+          0x0 bootloader.bin \
+          0x8000 partition-table.bin \
+          0x10000 lcd_display.bin
+        \`\`\`
+
+        ## OTA Update
+        Use the OTA binary for in-field updates via your OTA server.
+
+        ## Changes
+        EOF
+
+        if git rev-parse HEAD~1 >/dev/null 2>&1; then
+          git log --pretty=format:"- %s (%h)" HEAD~1..HEAD >> "$OUT_DIR/RELEASE_NOTES.md"
+        fi
+
+    - name: Create manifest file
+      run: |
+        OUT_DIR="release_artifacts"
+        VERSION="${{ steps.get-version.outputs.version }}"
+
+        cat > "$OUT_DIR/manifest.json" << EOF
+        {
+          "version": "$VERSION",
+          "build_date": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+          "target": "${{ matrix.target }}",
+          "idf_version": "${{ matrix.idf-version }}",
+          "git_sha": "$GITHUB_SHA",
+          "firmware": {
+            "ota": "lcd_display_${VERSION}_ota.bin",
+            "full": "lcd_display_${VERSION}_full.bin",
+            "app": "lcd_display.bin"
+          },
+          "partitions": {
+            "bootloader": "bootloader.bin",
+            "partition_table": "partition-table.bin"
+          }
+        }
+        EOF
+
+    - name: Upload release artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-firmware-${{ matrix.target }}
+        path: release_artifacts/
+        retention-days: 90
+
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+
+  create-github-release:
+    name: Create GitHub Release
+    needs: build-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-firmware-esp32s3
+          path: release_artifacts/
+
+      - name: List artifacts
+        run: |
+          ls -lh release_artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build-release.outputs.version }}
+          name: ESP32-S3-EYE Firmware ${{ needs.build-release.outputs.version }}
+          body_path: release_artifacts/RELEASE_NOTES.md
+          draft: ${{ inputs.draft || github.event_name != 'push' }}
+          prerelease: ${{ inputs.prerelease || false }}
+          files: |
+            release_artifacts/*.bin
+            release_artifacts/manifest.json
+            release_artifacts/RELEASE_NOTES.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,160 @@
+name: Unit Testing & Coverage
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+env:
+  DEFAULT_TARGET: esp32s3
+  DEFAULT_IDF_VERSION: v5.5.4
+
+jobs:
+  host-unit-tests:
+    name: Host-Based Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup C/C++ build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libcmocka-dev lcov
+
+      - name: Check for existing tests
+        id: check-tests
+        run: |
+          if find . -name "*_test.c" -o -name "*_test.cpp" -o -name "test_*.c" -o -name "test_*.cpp" | grep -q .; then
+            echo "has_tests=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_tests=false" >> $GITHUB_OUTPUT
+            echo "No unit tests found. Skipping host-based tests."
+          fi
+
+      - name: Build and run host-based tests
+        if: steps.check-tests.outputs.has_tests == 'true'
+        run: |
+          mkdir -p build_host
+          cd build_host
+          cmake .. -DBUILD_TESTS=ON
+          make
+          ctest --output-on-failure
+
+  qemu-unit-tests:
+    name: QEMU Emulated Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: ${{ env.DEFAULT_IDF_VERSION }}
+          target: ${{ env.DEFAULT_TARGET }}
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-xtensa
+
+      - name: Check for pytest tests
+        id: check-pytest
+        run: |
+          if find . -name "pytest_*.py" | grep -q .; then
+            echo "has_pytest=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_pytest=false" >> $GITHUB_OUTPUT
+            echo "No pytest tests found."
+          fi
+
+      - name: Run pytest tests
+        if: steps.check-pytest.outputs.has_pytest == 'true'
+        run: |
+          pip install pytest pytest-embedded pytest-embedded-serial-esp pytest-embedded-idf
+          pytest --junitxml=test-results.xml -v
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results.xml
+        if: always()
+
+  code-coverage:
+    name: Code Coverage Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: ${{ env.DEFAULT_IDF_VERSION }}
+          target: ${{ env.DEFAULT_TARGET }}
+
+      - name: Install coverage tools
+        run: |
+          sudo apt-get install -y lcov
+          pip install gcovr
+
+      - name: Build with coverage flags
+        run: |
+          for example in examples/*/; do
+            if [ -f "$example/CMakeLists.txt" ]; then
+              echo "Building $example with coverage flags"
+              idf.py -C "$example" set-target ${{ env.DEFAULT_TARGET }}
+              idf.py -C "$example" -DCOVERAGE=1 build || echo "Coverage build may require specific setup"
+            fi
+          done
+
+      - name: Generate coverage report with gcovr
+        run: |
+          mkdir -p coverage
+          gcovr --root . \
+                --filter 'examples/' \
+                --exclude '.*build.*' \
+                --exclude '.*managed_components.*' \
+                --html --html-details -o coverage/coverage.html \
+                --xml -o coverage/coverage.xml \
+                --print-summary || echo "No coverage data generated yet"
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+        if: always()
+
+  sonarcloud:
+    name: SonarCloud Analysis
+    runs-on: ubuntu-latest
+    if: github.repository_owner != 'null'
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        if: env.SONAR_TOKEN != null
+        with:
+          args: >
+            -Dsonar.organization=${{ github.repository_owner }}
+            -Dsonar.projectKey=${{ github.repository_owner }}_${{ github.event.repository.name }}
+            -Dsonar.cfamily.compile-commands=build/compile_commands.json

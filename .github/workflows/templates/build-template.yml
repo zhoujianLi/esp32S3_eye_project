@@ -1,0 +1,126 @@
+name: Reusable ESP-IDF Build Template
+
+on:
+  workflow_call:
+    inputs:
+      example:
+        description: 'Path to example directory'
+        required: true
+        type: string
+      idf-version:
+        description: 'ESP-IDF version'
+        required: false
+        type: string
+        default: 'v5.5.4'
+      target:
+        description: 'Target chip'
+        required: false
+        type: string
+        default: 'esp32s3'
+      verbose:
+        description: 'Verbose output'
+        required: false
+        type: boolean
+        default: false
+      generate-ota:
+        description: 'Generate OTA firmware'
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      artifact-name:
+        description: 'Name of the uploaded artifact'
+        value: ${{ jobs.build.outputs.artifact-name }}
+
+jobs:
+  build:
+    name: Build ${{ inputs.example }} (${{ inputs.target }}, IDF ${{ inputs.idf-version }})
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: ${{ steps.artifact.outputs.name }}
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Cache ESP-IDF tools
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.espressif
+          **/managed_components
+        key: ${{ runner.os }}-idf-${{ inputs.idf-version }}-${{ hashFiles('**/idf_component.yml') }}
+        restore-keys: |
+          ${{ runner.os }}-idf-${{ inputs.idf-version }}-
+
+    - name: Setup ESP-IDF ${{ inputs.idf-version }}
+      uses: espressif/esp-idf-ci-action@v1
+      with:
+        esp_idf_version: ${{ inputs.idf-version }}
+        target: ${{ inputs.target }}
+
+    - name: Configure build
+      run: |
+        EXAMPLE_PATH="${{ inputs.example }}"
+        idf.py -C "$EXAMPLE_PATH" set-target ${{ inputs.target }}
+
+    - name: Build firmware
+      run: |
+        EXAMPLE_PATH="${{ inputs.example }}"
+        if [ "${{ inputs.verbose }}" = "true" ]; then
+          idf.py -C "$EXAMPLE_PATH" build -v
+        else
+          idf.py -C "$EXAMPLE_PATH" build
+        fi
+
+    - name: Collect build artifacts
+      if: success()
+      id: artifact
+      run: |
+        EXAMPLE_PATH="${{ inputs.example }}"
+        EXAMPLE_NAME=$(basename "$EXAMPLE_PATH")
+        OUT_DIR="artifacts/$EXAMPLE_NAME"
+        mkdir -p "$OUT_DIR"
+
+        cp "$EXAMPLE_PATH/build/bootloader/bootloader.bin" "$OUT_DIR/"
+        cp "$EXAMPLE_PATH/build/partition_table/partition-table.bin" "$OUT_DIR/"
+        cp "$EXAMPLE_PATH/build/"*.bin "$OUT_DIR/" 2>/dev/null || true
+        cp "$EXAMPLE_PATH/build/"*.elf "$OUT_DIR/" 2>/dev/null || true
+        cp "$EXAMPLE_PATH/build/flasher_args.json" "$OUT_DIR/" 2>/dev/null || true
+
+        ARTIFACT_NAME="${{ inputs.target }}-${{ inputs.idf-version }}-$EXAMPLE_NAME"
+        echo "name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+
+    - name: Generate OTA firmware
+      if: inputs.generate-ota
+      run: |
+        EXAMPLE_PATH="${{ inputs.example }}"
+        EXAMPLE_NAME=$(basename "$EXAMPLE_PATH")
+        OUT_DIR="artifacts/$EXAMPLE_NAME"
+
+        python $IDF_PATH/components/app_update/gen_ota_partition.py \
+          --app "$EXAMPLE_PATH/build/${EXAMPLE_NAME}.bin" \
+          --output "$OUT_DIR/${EXAMPLE_NAME}_ota.bin"
+
+    - name: Generate combined firmware image
+      if: success()
+      run: |
+        EXAMPLE_PATH="${{ inputs.example }}"
+        EXAMPLE_NAME=$(basename "$EXAMPLE_PATH")
+        OUT_DIR="artifacts/$EXAMPLE_NAME"
+
+        python $IDF_PATH/components/esptool_py/esptool/esptool.py \
+          --chip ${{ inputs.target }} \
+          merge_bin \
+          -o "$OUT_DIR/${EXAMPLE_NAME}_combined.bin" \
+          @$EXAMPLE_PATH/build/flasher_args.json
+
+    - name: Upload build artifacts
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.artifact.outputs.name }}
+        path: artifacts/
+        retention-days: 30

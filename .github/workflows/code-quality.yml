@@ -1,0 +1,154 @@
+name: Code Quality & Static Analysis
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+    types: [ opened, synchronize, reopened ]
+  workflow_dispatch:
+
+env:
+  DEFAULT_TARGET: esp32s3
+  DEFAULT_IDF_VERSION: v5.5.4
+
+jobs:
+  static-analysis:
+    name: Static Code Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: ${{ env.DEFAULT_IDF_VERSION }}
+          target: ${{ env.DEFAULT_TARGET }}
+
+      - name: Install static analysis tools
+        run: |
+          apt-get update && apt-get install -y cppcheck clang-tidy
+
+      - name: Run cppcheck
+        run: |
+          cppcheck --version
+          find examples -name "*.c" -o -name "*.h" | xargs \
+            cppcheck --enable=all \
+                    --std=c99 \
+                    --platform=unix64 \
+                    --suppress=missingIncludeSystem \
+                    --suppress=unusedFunction \
+                    --suppress=unusedStructMember \
+                    --error-exitcode=1 \
+                    --inline-suppr \
+                    2>&1 | tee cppcheck-report.txt
+
+      - name: Upload cppcheck report
+        uses: actions/upload-artifact@v4
+        with:
+          name: cppcheck-report
+          path: cppcheck-report.txt
+        if: always()
+
+      - name: Run clang-tidy
+        run: |
+          clang-tidy --version
+          for example in examples/*/; do
+            if [ -f "$example/CMakeLists.txt" ]; then
+              echo "Running clang-tidy on $example"
+              find "$example" -name "*.c" -o -name "*.h" | xargs clang-tidy --quiet 2>/dev/null || true
+            fi
+          done
+
+  formatting-check:
+    name: Code Formatting Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: |
+          apt-get update && apt-get install -y clang-format
+
+      - name: Check C/C++ formatting
+        run: |
+          find . -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" | grep -v build | grep -v managed_components | grep -v ".git" > files.txt
+          if [ -s files.txt ]; then
+            clang-format --style=file -i $(cat files.txt)
+            git diff --exit-code || (echo "Code formatting issues found. Please run clang-format on your code." && exit 1)
+          else
+            echo "No C/C++ files found to check."
+          fi
+
+  cmake-lint:
+    name: CMake Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install cmake-lint
+        run: |
+          pip install cmakelint
+
+      - name: Run cmake-lint
+        run: |
+          find . -name "CMakeLists.txt" | grep -v build | grep -v managed_components | grep -v ".git" | xargs cmakelint --filter=-whitespace/indent,-convention/filename
+
+  build-warnings:
+    name: Compiler Warnings Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: ${{ env.DEFAULT_IDF_VERSION }}
+          target: ${{ env.DEFAULT_TARGET }}
+
+      - name: Build with strict warnings
+        run: |
+          for example in examples/*/; do
+            if [ -f "$example/CMakeLists.txt" ]; then
+              echo "Building $example with strict warnings"
+              idf.py -C "$example" set-target ${{ env.DEFAULT_TARGET }}
+              idf.py -C "$example" build 2>&1 | tee build.log
+
+              WARN_COUNT=$(grep -c "warning:" build.log || true)
+              echo "Found $WARN_COUNT warnings in $example"
+
+              if [ $WARN_COUNT -gt 0 ]; then
+                echo "::warning file=$example,line=1,col=1::Found $WARN_COUNT compiler warnings"
+              fi
+            fi
+          done
+
+  idf-component-check:
+    name: IDF Component Manager Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: ${{ env.DEFAULT_IDF_VERSION }}
+          target: ${{ env.DEFAULT_TARGET }}
+
+      - name: Validate component manifests
+        run: |
+          for manifest in $(find . -name "idf_component.yml" | grep -v managed_components | grep -v ".git"); do
+            echo "Validating $manifest"
+            python -c "import yaml; yaml.safe_load(open('$manifest'))" || echo "::error file=$manifest::Invalid YAML in component manifest"
+          done

@@ -1,0 +1,80 @@
+@startuml
+title lcd_display functional state diagram
+
+[*] --> Boot
+
+state Boot {
+  [*] --> LogStartup
+  LogStartup : log "button-capture demo"
+}
+
+Boot --> InitI2C
+InitI2C : bsp_i2c_init()
+InitI2C --> InitLCD : ESP_OK
+InitI2C --> FatalError : ESP_ERROR_CHECK fails
+
+InitLCD : bsp_display_start_with_config()
+InitLCD : bsp_display_backlight_on()
+InitLCD : create full-screen LVGL image object
+InitLCD : hide image object initially
+InitLCD --> InitCamera
+
+InitCamera : esp_camera_init(BSP_CAMERA_DEFAULT_CONFIG)
+InitCamera : RGB565, 240x240, double framebuffer in PSRAM
+InitCamera --> ConfigureSensor : ESP_OK
+InitCamera --> FatalError : ESP_ERROR_CHECK fails
+
+ConfigureSensor : set_vflip(BSP_CAMERA_VFLIP)
+ConfigureSensor : set_hmirror(BSP_CAMERA_HMIRROR)
+ConfigureSensor --> InitButtons
+
+InitButtons : bsp_iot_button_create()
+InitButtons : register MENU BUTTON_PRESS_DOWN callback
+InitButtons --> ReadyIdle : ESP_OK
+InitButtons --> FatalError : ESP_ERROR_CHECK fails
+
+state ReadyIdle {
+  [*] --> WaitingForMenu
+  WaitingForMenu : app_main yields every 100 ms
+  WaitingForMenu : LVGL task refreshes display independently
+  WaitingForMenu --> CaptureRequested : MENU press down
+
+  CaptureRequested : on_button_press()
+  CaptureRequested --> CaptureFrame
+
+  CaptureFrame : esp_camera_fb_get()
+  CaptureFrame --> CaptureFailed : fb == NULL
+  CaptureFrame --> EnsureImageBuffer : fb != NULL
+
+  CaptureFailed : log camera capture failed
+  CaptureFailed --> WaitingForMenu
+
+  EnsureImageBuffer : if fb->len > buffer_size, free old buffer and malloc new
+  EnsureImageBuffer --> CopyAndConvert : s_img_buf != NULL
+  EnsureImageBuffer --> ReturnFrameNoUpdate : allocation unavailable
+
+  CopyAndConvert : memcpy camera frame to persistent buffer
+  CopyAndConvert : swap RGB565 byte pairs for LVGL little-endian layout
+  CopyAndConvert --> UpdateImageDescriptor
+
+  UpdateImageDescriptor : set LVGL img descriptor format, size, data pointer
+  UpdateImageDescriptor --> TryDisplayLock
+
+  TryDisplayLock : bsp_display_lock(0)
+  TryDisplayLock --> DisplayStillImage : lock acquired
+  TryDisplayLock --> ReturnFrameNoUpdate : lock not acquired
+
+  DisplayStillImage : lv_img_set_src()
+  DisplayStillImage : clear HIDDEN flag
+  DisplayStillImage --> ReturnFrame
+
+  ReturnFrameNoUpdate : keep previous display contents
+  ReturnFrameNoUpdate --> ReturnFrame
+
+  ReturnFrame : esp_camera_fb_return(fb)
+  ReturnFrame --> WaitingForMenu
+}
+
+FatalError : ESP_ERROR_CHECK abort/restart behavior
+FatalError --> [*]
+@enduml
