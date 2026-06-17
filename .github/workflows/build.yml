@@ -25,6 +25,7 @@ on:
         required: false
         default: false
         type: boolean
+  workflow_call:
 
 env:
   DEFAULT_TARGET: esp32s3
