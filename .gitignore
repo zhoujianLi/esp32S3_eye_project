@@ -20,7 +20,7 @@
 .vscode/
 
 # claude code files
-.claude/ 
+.claude/
 
 # Build artifacts and directories
 **/build/

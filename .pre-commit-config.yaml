@@ -1,0 +1,29 @@
+# Pre-commit hooks for ESP32-S3-EYE project
+# Setup (one-time, per developer machine):
+#   pip install pre-commit
+#   pre-commit install
+#
+# Manual run on all files:
+#   pre-commit run --all-files
+
+repos:
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v18.1.8
+    hooks:
+      - id: clang-format
+        types_or: [c, c++]
+        exclude: '^(build|managed_components|examples/.*/managed_components)/.*$'
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '^(build|managed_components|examples/.*/managed_components)/.*$'
+      - id: end-of-file-fixer
+        exclude: '^(build|managed_components|examples/.*/managed_components)/.*$'
+      - id: check-yaml
+        exclude: '^(build|managed_components|examples/.*/managed_components)/.*$'
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: ['--fix=lf']
+        exclude: '^(build|managed_components|examples/.*/managed_components)/.*$'

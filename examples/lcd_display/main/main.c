@@ -2,12 +2,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "esp_log.h"
-#include "esp_camera.h"
-#include "lvgl.h"
-#include "iot_button.h"
-
 #include "bsp/esp32_s3_eye.h"
+#include "esp_camera.h"
+#include "esp_log.h"
+#include "iot_button.h"
+#include "lvgl.h"
 
 static const char *TAG = "app";
 
@@ -15,19 +14,18 @@ static const char *TAG = "app";
 #define FW_VERSION "unknown"
 #endif
 
-static lv_obj_t *s_capture_img = NULL;
-static lv_img_dsc_t s_img_dsc = { 0 };
-static uint8_t *s_img_buf = NULL;
-static size_t  s_img_buf_size = 0;
+static lv_obj_t    *s_capture_img  = NULL;
+static lv_img_dsc_t s_img_dsc      = {0};
+static uint8_t     *s_img_buf      = NULL;
+static size_t       s_img_buf_size = 0;
 
 /* ---------- Display ---------- */
-static void app_lcd_init(void)
-{
+static void app_lcd_init(void) {
     bsp_display_cfg_t cfg = {
         .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
-        .buffer_size = BSP_LCD_DRAW_BUFF_SIZE,
+        .buffer_size   = BSP_LCD_DRAW_BUFF_SIZE,
         .double_buffer = BSP_LCD_DRAW_BUFF_DOUBLE,
-        .flags = { .buff_spiram = true },
+        .flags         = {.buff_spiram = true},
     };
     bsp_display_start_with_config(&cfg);
     bsp_display_backlight_on();
@@ -41,8 +39,7 @@ static void app_lcd_init(void)
 }
 
 /* ---------- Button ---------- */
-static void on_button_press(void *button_handle, void *usr_data)
-{
+static void on_button_press(void *button_handle, void *usr_data) {
     camera_fb_t *fb = esp_camera_fb_get();
     if (!fb) {
         ESP_LOGE(TAG, "Camera capture failed");
@@ -53,7 +50,7 @@ static void on_button_press(void *button_handle, void *usr_data)
     /* Grow the persistent buffer if needed (first capture or resolution change) */
     if (fb->len > s_img_buf_size) {
         free(s_img_buf);
-        s_img_buf = malloc(fb->len);
+        s_img_buf      = malloc(fb->len);
         s_img_buf_size = s_img_buf ? fb->len : 0;
     }
 
@@ -63,16 +60,16 @@ static void on_button_press(void *button_handle, void *usr_data)
         /* Camera outputs big-endian RGB565; LVGL v9 stores little-endian.
          * Swap byte pairs to fix the color distortion. */
         for (size_t i = 0; i < fb->len; i += 2) {
-            uint8_t tmp = s_img_buf[i];
-            s_img_buf[i] = s_img_buf[i + 1];
+            uint8_t tmp      = s_img_buf[i];
+            s_img_buf[i]     = s_img_buf[i + 1];
             s_img_buf[i + 1] = tmp;
         }
 
-        s_img_dsc.header.cf  = LV_COLOR_FORMAT_RGB565;
-        s_img_dsc.header.w   = fb->width;
-        s_img_dsc.header.h   = fb->height;
-        s_img_dsc.data_size  = fb->len;
-        s_img_dsc.data       = s_img_buf;
+        s_img_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+        s_img_dsc.header.w  = fb->width;
+        s_img_dsc.header.h  = fb->height;
+        s_img_dsc.data_size = fb->len;
+        s_img_dsc.data      = s_img_buf;
 
         if (bsp_display_lock(0)) {
             lv_img_set_src(s_capture_img, &s_img_dsc);
@@ -84,8 +81,7 @@ static void on_button_press(void *button_handle, void *usr_data)
     esp_camera_fb_return(fb);
 }
 
-static void app_button_init(void)
-{
+static void app_button_init(void) {
     button_handle_t btns[BSP_BUTTON_NUM];
     ESP_ERROR_CHECK(bsp_iot_button_create(btns, NULL, BSP_BUTTON_NUM));
     iot_button_register_cb(btns[BSP_BUTTON_MENU], BUTTON_PRESS_DOWN, NULL, on_button_press, NULL);
@@ -93,8 +89,7 @@ static void app_button_init(void)
 }
 
 /* ---------- Main ---------- */
-void app_main(void)
-{
+void app_main(void) {
     ESP_LOGI(TAG, "=== ESP32-S3-EYE: button-capture demo ===");
     ESP_LOGI(TAG, "Firmware version: %s", FW_VERSION);
 

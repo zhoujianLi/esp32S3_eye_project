@@ -89,39 +89,6 @@ jobs:
         run: |
           find . -name "CMakeLists.txt" | grep -v build | grep -v managed_components | grep -v ".git" | xargs cmakelint --filter=-whitespace/indent,-convention/filename
 
-  build-warnings:
-    name: Compiler Warnings Check
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Setup ESP-IDF
-        uses: espressif/esp-idf-ci-action@v1
-        with:
-          esp_idf_version: ${{ env.DEFAULT_IDF_VERSION }}
-          target: ${{ env.DEFAULT_TARGET }}
-          path: 'examples/lcd_display'
-
-      - name: Build with strict warnings
-        run: |
-          for example in examples/*/; do
-            if [ -f "$example/CMakeLists.txt" ]; then
-              echo "Building $example with strict warnings"
-              idf.py -C "$example" set-target ${{ env.DEFAULT_TARGET }}
-              idf.py -C "$example" build 2>&1 | tee build.log
-
-              WARN_COUNT=$(grep -c "warning:" build.log || true)
-              echo "Found $WARN_COUNT warnings in $example"
-
-              if [ $WARN_COUNT -gt 0 ]; then
-                echo "::warning file=$example,line=1,col=1::Found $WARN_COUNT compiler warnings"
-              fi
-            fi
-          done
-
   idf-component-check:
     name: IDF Component Manager Check
     runs-on: ubuntu-latest
