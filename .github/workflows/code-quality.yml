@@ -1,11 +1,6 @@
 name: Code Quality & Static Analysis
 
 on:
-  push:
-    branches: [ master, main ]
-  pull_request:
-    branches: [ master, main ]
-    types: [ opened, synchronize, reopened ]
   workflow_dispatch:
   workflow_call:
 

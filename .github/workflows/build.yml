@@ -1,18 +1,6 @@
 name: ESP32-S3-EYE CI/CD Pipeline
 
 on:
-  push:
-    branches: [ master, main ]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - '.gitignore'
-  pull_request:
-    branches: [ master, main ]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - '.gitignore'
   workflow_dispatch:
     inputs:
       idf_version:
