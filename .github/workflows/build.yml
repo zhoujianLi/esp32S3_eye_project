@@ -144,7 +144,9 @@ jobs:
           esp_idf_version: ${{ matrix.idf-version }}
           target: ${{ matrix.target }}
           path: ${{ matrix.example }}
-          command: idf.py merge-bin
+          # Override --flash-size detect (no longer accepted by newer esptool inside
+          # the IDF container) with the explicit 8MB this project actually uses.
+          command: idf.py merge-bin --flash-size 8MB
 
       - name: Move combined firmware to artifacts
         if: success()
