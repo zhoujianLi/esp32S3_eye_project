@@ -139,20 +139,29 @@ jobs:
 
       - name: Generate combined firmware image
         if: success()
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: ${{ matrix.idf-version }}
+          target: ${{ matrix.target }}
+          path: ${{ matrix.example }}
+          command: idf.py merge-bin
+
+      - name: Move combined firmware to artifacts
+        if: success()
         shell: bash
         run: |
           EXAMPLE_PATH="${{ matrix.example }}"
           EXAMPLE_NAME=$(basename "$EXAMPLE_PATH")
           OUT_DIR="$ARTIFACTS_DIR/$EXAMPLE_NAME"
-
-          pip install --quiet esptool
-          python -m esptool \
-            --chip ${{ matrix.target }} \
-            merge_bin \
-            -o "$OUT_DIR/${EXAMPLE_NAME}_combined.bin" \
-            @"$EXAMPLE_PATH/build/flasher_args.json"
-
-          ls -lh "$OUT_DIR/${EXAMPLE_NAME}_combined.bin"
+          # idf.py merge-bin writes to build/<project_name>-merged.bin
+          MERGED_SRC="$EXAMPLE_PATH/build/${EXAMPLE_NAME}-merged.bin"
+          if [ -f "$MERGED_SRC" ]; then
+            cp "$MERGED_SRC" "$OUT_DIR/${EXAMPLE_NAME}_combined.bin"
+            ls -lh "$OUT_DIR/${EXAMPLE_NAME}_combined.bin"
+          else
+            echo "::warning::Merged binary not found at $MERGED_SRC"
+            ls -lh "$EXAMPLE_PATH/build/" || true
+          fi
 
       - name: Upload build artifacts
         if: success()
