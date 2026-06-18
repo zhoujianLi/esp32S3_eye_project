@@ -49,7 +49,9 @@ jobs:
             VERSIONS='["${{ inputs.idf_version }}"]'
             echo "Manual run with explicit version -> $VERSIONS"
           else
-            VERSIONS='["v5.5.4","v5.4.2","v5.3.3"]'
+            # Full matrix on push to main / scheduled runs.
+            # v5.3.3 dropped: espressif/esp32_s3_eye BSP requires IDF >=5.4.
+            VERSIONS='["v5.5.4","v5.4.2"]'
             echo "Push/schedule/manual -> full matrix"
           fi
           echo "idf-versions=$VERSIONS" >> $GITHUB_OUTPUT
@@ -95,7 +97,7 @@ jobs:
           esp_idf_version: ${{ matrix.idf-version }}
           target: ${{ matrix.target }}
           path: ${{ matrix.example }}
-          command: size
+          command: idf.py size
 
       - name: Generate build manifest
         shell: bash
