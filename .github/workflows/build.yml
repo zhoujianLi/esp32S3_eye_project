@@ -1,10 +1,6 @@
 name: Build Firmware
 
 on:
-  push:
-    branches: [ ci/phase-2-build-workflow ]
-  pull_request:
-    branches: [ main, master ]
   workflow_dispatch:
     inputs:
       idf_version:
