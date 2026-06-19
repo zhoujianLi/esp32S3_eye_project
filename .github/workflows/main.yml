@@ -2,7 +2,7 @@ name: Main CI Pipeline
 
 on:
   push:
-    branches: [ master, main, ci/phase-2-build-workflow ]
+    branches: [ master, main ]
   pull_request:
     branches: [ master, main ]
   workflow_dispatch:
