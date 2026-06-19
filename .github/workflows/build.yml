@@ -137,10 +137,19 @@ jobs:
 
           ls -lh "$OUT_DIR"
 
+      - name: Compute safe example name
+        id: safe-name
+        shell: bash
+        run: |
+          # Replace '/' with '-' so the artifact name is filesystem-safe
+          # (e.g., examples/lcd_display -> examples-lcd_display).
+          SAFE_NAME=$(echo "${{ matrix.example }}" | tr '/' '-')
+          echo "name=$SAFE_NAME" >> $GITHUB_OUTPUT
+
       - name: Upload build artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}-${{ matrix.idf-version }}-${{ matrix.example }}
+          name: ${{ matrix.target }}-${{ matrix.idf-version }}-${{ steps.safe-name.outputs.name }}
           path: ${{ env.ARTIFACTS_DIR }}/
           retention-days: 30
