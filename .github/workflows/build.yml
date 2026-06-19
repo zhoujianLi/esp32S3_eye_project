@@ -137,34 +137,6 @@ jobs:
 
           ls -lh "$OUT_DIR"
 
-      - name: Generate combined firmware image
-        if: success()
-        uses: espressif/esp-idf-ci-action@v1
-        with:
-          esp_idf_version: ${{ matrix.idf-version }}
-          target: ${{ matrix.target }}
-          path: ${{ matrix.example }}
-          # Override --flash-size detect (no longer accepted by newer esptool inside
-          # the IDF container) with the explicit 8MB this project actually uses.
-          command: idf.py merge-bin --flash-size 8MB
-
-      - name: Move combined firmware to artifacts
-        if: success()
-        shell: bash
-        run: |
-          EXAMPLE_PATH="${{ matrix.example }}"
-          EXAMPLE_NAME=$(basename "$EXAMPLE_PATH")
-          OUT_DIR="$ARTIFACTS_DIR/$EXAMPLE_NAME"
-          # idf.py merge-bin writes to build/<project_name>-merged.bin
-          MERGED_SRC="$EXAMPLE_PATH/build/${EXAMPLE_NAME}-merged.bin"
-          if [ -f "$MERGED_SRC" ]; then
-            cp "$MERGED_SRC" "$OUT_DIR/${EXAMPLE_NAME}_combined.bin"
-            ls -lh "$OUT_DIR/${EXAMPLE_NAME}_combined.bin"
-          else
-            echo "::warning::Merged binary not found at $MERGED_SRC"
-            ls -lh "$EXAMPLE_PATH/build/" || true
-          fi
-
       - name: Upload build artifacts
         if: success()
         uses: actions/upload-artifact@v4
