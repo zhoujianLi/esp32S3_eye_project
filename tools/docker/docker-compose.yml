@@ -1,0 +1,58 @@
+# Docker Compose for ESP32-S3-EYE local CI pipeline
+#
+# Provides two services:
+#   - host-test: Our custom image for host unit tests, static analysis, coverage
+#   - esp-idf:   Official Espressif image for firmware builds and QEMU tests
+#
+# Common usage:
+#
+#   # Run host unit tests + static analysis (fast, ~30 sec)
+#   docker compose run --rm host-test
+#
+#   # Build firmware with ESP-IDF (slower, ~5 min first time)
+#   docker compose run --rm esp-idf
+#
+#   # Run QEMU-based pytest tests
+#   docker compose run --rm esp-idf pytest -v
+#
+#   # Open a shell in the host-test container for debugging
+#   docker compose run --rm host-test bash
+#
+#   # Full local CI: host tests + firmware build
+#   docker compose run --rm host-test && docker compose run --rm esp-idf
+
+services:
+  host-test:
+    build:
+      context: ./host-test
+      dockerfile: Dockerfile
+    image: esp32-s3-eye-host-test:dev
+    volumes:
+      # Mount the repo so tests run against your working code
+      - ../..:/workspace:cached
+    working_dir: /workspace
+    # Run as the host user's UID:GID to avoid file permission issues
+    # on Linux/macOS hosts. On Windows this is ignored.
+    user: "${UID:-1000}:${GID:-1000}"
+    tty: true
+    stdin_open: true
+
+  esp-idf:
+    image: espressif/idf:v5.5.4
+    volumes:
+      # Mount the repo
+      - ../..:/workspace:cached
+      # Persist ESP-IDF tools cache across runs (faster rebuilds)
+      - idf-tools:/opt/esp/idf/.git
+      - idf-cache:/root/.espressif
+    working_dir: /workspace
+    # Default: build the lcd_display example. Override with `command:` for other actions.
+    command: >
+      bash -c "cd examples/lcd_display &&
+               idf.py build"
+    tty: true
+    stdin_open: true
+
+volumes:
+  idf-tools:
+  idf-cache:

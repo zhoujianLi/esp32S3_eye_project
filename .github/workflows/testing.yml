@@ -28,6 +28,7 @@ jobs:
         run: |
           if find . -name "*_test.c" -o -name "*_test.cpp" -o -name "test_*.c" -o -name "test_*.cpp" | grep -q .; then
             echo "has_tests=true" >> $GITHUB_OUTPUT
+            echo "Found unit test files"
           else
             echo "has_tests=false" >> $GITHUB_OUTPUT
             echo "No unit tests found. Skipping host-based tests."
@@ -36,6 +37,10 @@ jobs:
       - name: Build and run host-based tests
         if: steps.check-tests.outputs.has_tests == 'true'
         run: |
+          # Build the host-test entry from the repo root CMakeLists.txt.
+          # That root file can route into multiple example-local test folders,
+          # each defining its own cmocka target under examples/<name>/tests.
+          # See Lecture L04 (Test Pyramid) for the recommended pattern.
           mkdir -p build_host
           cd build_host
           cmake .. -DBUILD_TESTS=ON
@@ -51,39 +56,48 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Setup ESP-IDF
+      - name: Check for pytest tests
+        id: check-pytest
+        run: |
+          if find . -name "pytest_*.py" -not -path "*/managed_components/*" -not -path "*/build/*" | grep -q .; then
+            echo "has_pytest=true" >> $GITHUB_OUTPUT
+            echo "Found pytest test files"
+          else
+            echo "has_pytest=false" >> $GITHUB_OUTPUT
+            echo "No pytest tests found. Skipping QEMU tests."
+          fi
+
+      - name: Setup ESP-IDF + QEMU + pytest (only if tests exist)
+        if: steps.check-pytest.outputs.has_pytest == 'true'
+        run: |
+          # Install QEMU for Xtensa (ESP32 emulation)
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-xtensa
+
+          # Install pytest-embedded for ESP32 testing
+          pip install pytest pytest-embedded pytest-embedded-serial-esp pytest-embedded-idf
+
+      - name: Run pytest tests
+        if: steps.check-pytest.outputs.has_pytest == 'true'
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: ${{ env.DEFAULT_IDF_VERSION }}
           target: ${{ env.DEFAULT_TARGET }}
-
-      - name: Install QEMU
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system-xtensa
-
-      - name: Check for pytest tests
-        id: check-pytest
-        run: |
-          if find . -name "pytest_*.py" | grep -q .; then
-            echo "has_pytest=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_pytest=false" >> $GITHUB_OUTPUT
-            echo "No pytest tests found."
-          fi
-
-      - name: Run pytest tests
-        if: steps.check-pytest.outputs.has_pytest == 'true'
-        run: |
-          pip install pytest pytest-embedded pytest-embedded-serial-esp pytest-embedded-idf
-          pytest --junitxml=test-results.xml -v
+          path: examples/lcd_display
+          # pytest-embedded-idf expects to be run from an IDF project directory.
+          # The action runs this command inside the ESP-IDF container where idf.py
+          # is available, so pytest can invoke idf.py build/flash internally.
+          command: |
+            pip install pytest pytest-embedded pytest-embedded-serial-esp pytest-embedded-idf && \
+            pytest --junitxml=test-results.xml -v
 
       - name: Upload test results
+        if: always() && steps.check-pytest.outputs.has_pytest == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: test-results
-          path: test-results.xml
-        if: always()
+          path: examples/lcd_display/test-results.xml
+          if-no-files-found: warn
 
   code-coverage:
     name: Code Coverage Analysis
@@ -94,28 +108,35 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Setup ESP-IDF
+      - name: Check for existing tests
+        id: check-tests
+        run: |
+          if find . -name "*_test.c" -o -name "*_test.cpp" -o -name "test_*.c" -o -name "test_*.cpp" | grep -q .; then
+            echo "has_tests=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_tests=false" >> $GITHUB_OUTPUT
+            echo "No tests exist. Coverage measurement is meaningless without tests. Skipping."
+          fi
+
+      - name: Build with coverage flags
+        if: steps.check-tests.outputs.has_tests == 'true'
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: ${{ env.DEFAULT_IDF_VERSION }}
           target: ${{ env.DEFAULT_TARGET }}
+          path: examples/lcd_display
+          # Build with coverage instrumentation. EXTRA_CFLAGS is picked up by ESP-IDF's
+          # build system and adds -fprofile-arcs -ftest-coverage to all compilations.
+          extra_docker_args: -e EXTRA_CFLAGS="-fprofile-arcs -ftest-coverage"
 
       - name: Install coverage tools
+        if: steps.check-tests.outputs.has_tests == 'true'
         run: |
           sudo apt-get install -y lcov
           pip install gcovr
 
-      - name: Build with coverage flags
-        run: |
-          for example in examples/*/; do
-            if [ -f "$example/CMakeLists.txt" ]; then
-              echo "Building $example with coverage flags"
-              idf.py -C "$example" set-target ${{ env.DEFAULT_TARGET }}
-              idf.py -C "$example" -DCOVERAGE=1 build || echo "Coverage build may require specific setup"
-            fi
-          done
-
       - name: Generate coverage report with gcovr
+        if: steps.check-tests.outputs.has_tests == 'true'
         run: |
           mkdir -p coverage
           gcovr --root . \
@@ -124,19 +145,25 @@ jobs:
                 --exclude '.*managed_components.*' \
                 --html --html-details -o coverage/coverage.html \
                 --xml -o coverage/coverage.xml \
-                --print-summary || echo "No coverage data generated yet"
+                --print-summary || echo "No coverage data generated (tests may not have run)"
 
       - name: Upload coverage artifacts
+        if: always() && steps.check-tests.outputs.has_tests == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: coverage/
-        if: always()
+          if-no-files-found: warn
 
   sonarcloud:
     name: SonarCloud Analysis
     runs-on: ubuntu-latest
-    if: github.repository_owner != 'null'
+    # Only run if SONAR_TOKEN is configured AND opt-in variable is set.
+    # GitHub Actions can't check secret presence at job-level if: directly,
+    # so we use a repository variable ENABLE_SONAR as the opt-in switch.
+    # Set ENABLE_SONAR=true in repo Settings > Secrets and variables > Actions > Variables
+    # to enable this job.
+    if: ${{ vars.ENABLE_SONAR == 'true' }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -149,9 +176,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        if: env.SONAR_TOKEN != null
         with:
           args: >
             -Dsonar.organization=${{ github.repository_owner }}
             -Dsonar.projectKey=${{ github.repository_owner }}_${{ github.event.repository.name }}
-            -Dsonar.cfamily.compile-commands=build/compile_commands.json
+            -Dsonar.cfamily.compile-commands=examples/lcd_display/build/compile_commands.json
