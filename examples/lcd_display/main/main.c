@@ -1,8 +1,8 @@
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "bsp/esp32_s3_eye.h"
+#include "capture_helpers.h"
 #include "esp_camera.h"
 #include "esp_log.h"
 #include "iot_button.h"
@@ -48,21 +48,20 @@ static void on_button_press(void *button_handle, void *usr_data) {
     ESP_LOGI(TAG, "Captured %dx%d, %zu bytes", fb->width, fb->height, fb->len);
 
     /* Grow the persistent buffer if needed (first capture or resolution change) */
-    if (fb->len > s_img_buf_size) {
-        free(s_img_buf);
-        s_img_buf      = malloc(fb->len);
-        s_img_buf_size = s_img_buf ? fb->len : 0;
+    if (!capture_ensure_buffer_capacity(&s_img_buf, &s_img_buf_size, fb->len)) {
+        ESP_LOGE(TAG, "Failed to allocate image buffer (%zu bytes)", fb->len);
+        esp_camera_fb_return(fb);
+        return;
     }
 
     if (s_img_buf) {
         memcpy(s_img_buf, fb->buf, fb->len);
 
-        /* Camera outputs big-endian RGB565; LVGL v9 stores little-endian.
-         * Swap byte pairs to fix the color distortion. */
-        for (size_t i = 0; i < fb->len; i += 2) {
-            uint8_t tmp      = s_img_buf[i];
-            s_img_buf[i]     = s_img_buf[i + 1];
-            s_img_buf[i + 1] = tmp;
+        /* Camera outputs big-endian RGB565; LVGL v9 stores little-endian. */
+        if (!capture_swap_rgb565_in_place(s_img_buf, fb->len)) {
+            ESP_LOGE(TAG, "Unexpected frame size for RGB565 swap (%zu bytes)", fb->len);
+            esp_camera_fb_return(fb);
+            return;
         }
 
         s_img_dsc.header.cf = LV_COLOR_FORMAT_RGB565;

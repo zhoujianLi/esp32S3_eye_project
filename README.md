@@ -19,6 +19,8 @@ The **ESP32-S3-EYE** is a development board featuring:
 esp32_s3_eye/
 ├── examples/               # Firmware examples
 │   └── lcd_display/       # LCD display example
+│       ├── main/          # App source and shared example helpers
+│       └── tests/         # Host-side tests for the example
 ├── components/             # Reusable components
 ├── docs/                   # Documentation
 │   ├── hardware/           # Hardware schematics and datasheets
@@ -57,6 +59,12 @@ esp32_s3_eye/
 - QEMU-emulated tests (pytest-embedded)
 - Code coverage reporting (gcovr + lcov)
 - SonarCloud integration
+
+Each example should keep its own tests under `examples/<name>/tests/` when the
+tests are tightly coupled to that example. Shared, reusable logic should move to
+`components/` only when another example can consume it cleanly.
+
+For a copyable layout, see [docs/examples/example-template.md](docs/examples/example-template.md).
 
 ### 🔒 Security (`security.yml`)
 - **CodeQL Analysis** - Code scanning for vulnerabilities
